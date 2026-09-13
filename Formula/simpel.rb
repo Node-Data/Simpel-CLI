@@ -8,9 +8,11 @@ class Simpel < Formula
 
   def install
     # Homebrew builds from source with swiftc (it does not use the Xcode project).
+    # Build to a distinct name: on case-insensitive macOS filesystems an output
+    # named "simpel" collides with the "Simpel" source directory.
     sources = Dir["Simpel/*.swift"]
-    system "swiftc", "-O", "-o", "simpel", *sources
-    bin.install "simpel"
+    system "swiftc", "-O", "-o", "simpel-cli", *sources
+    bin.install "simpel-cli" => "simpel"
   end
 
   test do

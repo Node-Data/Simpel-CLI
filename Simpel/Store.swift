@@ -2,7 +2,9 @@
 //  Store.swift
 //  Simpel
 //
-//  Persists the set of installed packages under the user's home directory.
+//  Persists Simpel's on-disk state under the user's home directory:
+//  the cellar (where package payloads live), the bin directory (symlinks
+//  placed on the PATH), and the JSON manifest of installed packages.
 //
 
 import Foundation
@@ -18,15 +20,15 @@ enum StoreError: Error, CustomStringConvertible {
     }
 }
 
-/// Manages Simpel's on-disk state: the "prefix" directory and the manifest of
-/// installed packages. Everything lives under `~/.simpel`.
+/// Manages Simpel's on-disk layout. Everything lives under `~/.simpel`:
+///   ~/.simpel/cellar/<name>/<version>/<command>   the installed executables
+///   ~/.simpel/bin/<command>                        symlinks placed on PATH
+///   ~/.simpel/installed.json                       the manifest
 struct Store {
 
-    /// Root directory for all Simpel state, e.g. `~/.simpel`.
     let prefix: URL
-    /// Directory where package payloads are (simulated to be) installed.
     let cellar: URL
-    /// JSON manifest tracking installed packages.
+    let bin: URL
     let manifest: URL
 
     private let fileManager = FileManager.default
@@ -35,16 +37,30 @@ struct Store {
         let home = fileManager.homeDirectoryForCurrentUser
         prefix = home.appendingPathComponent(".simpel", isDirectory: true)
         cellar = prefix.appendingPathComponent("cellar", isDirectory: true)
+        bin = prefix.appendingPathComponent("bin", isDirectory: true)
         manifest = prefix.appendingPathComponent("installed.json", isDirectory: false)
     }
 
-    /// Creates the prefix and cellar directories if they don't yet exist.
+    /// Creates the cellar and bin directories if they don't yet exist.
     func bootstrap() throws {
         do {
             try fileManager.createDirectory(at: cellar, withIntermediateDirectories: true)
+            try fileManager.createDirectory(at: bin, withIntermediateDirectories: true)
         } catch {
-            throw StoreError.ioFailure("Could not create \(cellar.path): \(error.localizedDescription)")
+            throw StoreError.ioFailure("Could not create \(prefix.path): \(error.localizedDescription)")
         }
+    }
+
+    /// The directory holding a package's installed files.
+    func cellarDirectory(for package: Package) -> URL {
+        cellar
+            .appendingPathComponent(package.name, isDirectory: true)
+            .appendingPathComponent(package.version, isDirectory: true)
+    }
+
+    /// The PATH symlink for a given command name.
+    func binLink(for command: String) -> URL {
+        bin.appendingPathComponent(command, isDirectory: false)
     }
 
     // MARK: - Manifest
@@ -76,38 +92,26 @@ struct Store {
         }
     }
 
-    // MARK: - Convenience
-
     func isInstalled(_ name: String) throws -> Bool {
         try loadInstalled().contains { $0.name == name }
     }
 
-    /// Records a package as installed (creating a placeholder in the cellar).
-    func recordInstall(_ package: Package, asDependency: Bool) throws {
-        let dir = cellar.appendingPathComponent(package.name, isDirectory: true)
-        do {
-            try fileManager.createDirectory(at: dir, withIntermediateDirectories: true)
-            let receipt = dir.appendingPathComponent("\(package.version).receipt")
-            try Data("installed \(package.version)".utf8).write(to: receipt)
-        } catch {
-            throw StoreError.ioFailure("Could not stage \(package.name): \(error.localizedDescription)")
-        }
-
+    /// Adds or replaces a manifest entry for `package`.
+    func addToManifest(_ package: Package) throws {
         var installed = try loadInstalled().filter { $0.name != package.name }
         installed.append(InstalledPackage(name: package.name,
                                           version: package.version,
-                                          installedAt: Date(),
-                                          installedAsDependency: asDependency))
+                                          command: package.command,
+                                          installedAt: Date()))
         try saveInstalled(installed)
     }
 
-    /// Removes a package from the manifest and deletes its cellar payload.
-    func recordUninstall(_ name: String) throws {
-        let dir = cellar.appendingPathComponent(name, isDirectory: true)
-        if fileManager.fileExists(atPath: dir.path) {
-            try? fileManager.removeItem(at: dir)
-        }
-        let remaining = try loadInstalled().filter { $0.name != name }
-        try saveInstalled(remaining)
+    /// Removes the manifest entry with the given name, returning it if present.
+    @discardableResult
+    func removeFromManifest(_ name: String) throws -> InstalledPackage? {
+        let installed = try loadInstalled()
+        let removed = installed.first { $0.name == name }
+        try saveInstalled(installed.filter { $0.name != name })
+        return removed
     }
 }
